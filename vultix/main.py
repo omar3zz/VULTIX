@@ -1,5 +1,5 @@
-import os, json, time, datetime, requests, gc
-import google.generativeai as genai
+import os, json, time, datetime, requests
+from google import genai
 
 STATE_PATH = 'Vultix_Master_State.json'
 
@@ -26,10 +26,12 @@ class VultixSovereign:
 
     def init_brain(self):
         if self.fuel['GEMINI_API_KEY']:
-            genai.configure(api_key=self.fuel['GEMINI_API_KEY'])
-            self.brain = genai.GenerativeModel('gemini-1.5-flash')
+            self.client = genai.Client(api_key=self.fuel['GEMINI_API_KEY'])
+            self.model = 'gemini-1.5-flash'
+            print(f"[VULTIX] Brain initialized with model: {self.model}")
         else:
             print("[WARNING] GEMINI_API_KEY not set.")
+            self.client = None
 
     def send_signal(self, text):
         try:
@@ -39,6 +41,7 @@ class VultixSovereign:
                 json={'chat_id': self.fuel['OMAR_CHAT_ID'], 'text': text, 'parse_mode': 'Markdown'},
                 timeout=10
             )
+            print(f"[Telegram] Signal sent: {text[:60]}...")
         except Exception as e:
             print(f"[Telegram Error] {e}")
 
