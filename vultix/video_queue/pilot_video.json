@@ -1,0 +1,40 @@
+{
+    "title": "VULTIX — الحقيقة المخفية | الحلقة الأولى",
+    "status": "READY_PENDING_ORDER",
+    "target_audience": "Mystery / AI / Tech — السوق الأمريكي",
+    "duration_seconds": 60,
+    "language": "Arabic + English",
+    "created_at": "2026-05-15",
+    "production_locked": true,
+    "scenes": [
+        {
+            "id": 1,
+            "action": "Zoom-in Transition",
+            "duration": 5,
+            "text": "THE TRUTH IS HIDDEN",
+            "text_ar": "الحقيقة مخفية"
+        },
+        {
+            "id": 2,
+            "action": "Mystery Reveal",
+            "duration": 20,
+            "text": "VULTIX SUPREME ANALYSIS",
+            "text_ar": "تحليل VULTIX العميق — ما لا يريدونك أن تعرفه"
+        },
+        {
+            "id": 3,
+            "action": "AI Visual Sequence",
+            "duration": 20,
+            "text": "ARTIFICIAL INTELLIGENCE IS WATCHING",
+            "text_ar": "الذكاء الاصطناعي يراقب — وهذا ما اكتشفه"
+        },
+        {
+            "id": 4,
+            "action": "Call-to-Action",
+            "duration": 15,
+            "text": "SUBSCRIBE FOR THE UNKNOWN",
+            "text_ar": "اشترك لتعرف ما يُخفى عنك"
+        }
+    ],
+    "notes": "جاهز للإنتاج — مجمّد حتى أمر شخصي من المالك"
+}

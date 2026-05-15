@@ -3,7 +3,7 @@ import os, json, time, datetime, requests, threading
 from google import genai
 
 STATE_PATH = 'Vultix_Master_State.json'
-POLL_INTERVAL = 2
+VIDEO_QUEUE_PATH = 'video_queue/pilot_video.json'
 HEARTBEAT_INTERVAL = 3600
 
 class VultixSovereign:
@@ -25,6 +25,7 @@ class VultixSovereign:
         self.state['last_sync'] = datetime.datetime.now().isoformat()
         with open(STATE_PATH, 'w', encoding='utf-8') as f:
             json.dump(self.state, f, indent=4, ensure_ascii=False)
+        print(f"[State] Saved — Cycle #{self.state.get('cycle', 0)}")
 
     def init_brain(self):
         if self.gemini_key:
@@ -46,26 +47,38 @@ class VultixSovereign:
             print(f"[Telegram Error] {method}: {e}")
             return {}
 
-    def send(self, text, chat_id=None, reply_markup=None):
+    def reply_keyboard(self):
+        return {
+            'keyboard': [
+                [
+                    {'text': '📡 نبض مباشر'},
+                    {'text': '📊 تقرير الحالة'}
+                ],
+                [
+                    {'text': '🎬 توليد فوري'},
+                    {'text': '⚙️ الإعدادات'}
+                ],
+                [
+                    {'text': '🎞️ الفيديو الافتتاحي'},
+                    {'text': '❓ مساعدة'}
+                ]
+            ],
+            'resize_keyboard': True,
+            'persistent': True
+        }
+
+    def send(self, text, chat_id=None, with_keyboard=True):
         payload = {
             'chat_id': chat_id or self.chat_id,
             'text': text,
             'parse_mode': 'Markdown'
         }
-        if reply_markup:
-            payload['reply_markup'] = reply_markup
+        if with_keyboard:
+            payload['reply_markup'] = self.reply_keyboard()
         return self.api('sendMessage', **payload)
 
-    def main_keyboard(self):
-        return {
-            'inline_keyboard': [[
-                {'text': '📡 Live Pulse', 'callback_data': 'live_pulse'},
-                {'text': '🎬 Instant Gen', 'callback_data': 'instant_gen'}
-            ]]
-        }
-
     def build_status_report(self):
-        s = self.state
+        s = self.load_state()
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         return (
             f"📊 *VULTIX — تقرير الحالة*\n"
@@ -78,46 +91,90 @@ class VultixSovereign:
             f"📋 البروتوكول: {s.get('protocol', 'N/A')}\n"
             f"🕐 وقت الاستعلام: {now}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎬 الإنتاج: *مجمّد* — بانتظار أمرك الشخصي"
+            f"🎬 الإنتاج: *مجمّد* ⏸️\n"
+            f"🎞️ الفيديو الافتتاحي: جاهز للانطلاق بأمرك"
         )
 
-    def handle_callback(self, callback):
-        query_id = callback['id']
-        data = callback.get('data', '')
-        chat_id = callback['message']['chat']['id']
+    def pilot_video_report(self):
+        if os.path.exists(VIDEO_QUEUE_PATH):
+            with open(VIDEO_QUEUE_PATH, 'r', encoding='utf-8') as f:
+                v = json.load(f)
+            return (
+                f"🎞️ *الفيديو الافتتاحي — جاهز*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 العنوان: {v.get('title', 'N/A')}\n"
+                f"🎯 الهدف: {v.get('target_audience', 'N/A')}\n"
+                f"⏱ المدة: {v.get('duration_seconds', 'N/A')} ثانية\n"
+                f"📝 المحتوى:\n"
+                + "\n".join([f"  {i+1}. {s['text']}" for i, s in enumerate(v.get('scenes', []))])
+                + f"\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏸️ الإنتاج مجمّد — أرسل *ابدأ الإنتاج* للتفعيل"
+            )
+        return "⚠️ لم يتم العثور على ملف الفيديو الافتتاحي."
 
-        self.api('answerCallbackQuery', callback_query_id=query_id)
+    def handle_message(self, message):
+        text = message.get('text', '').strip()
+        chat_id = message['chat']['id']
 
-        if data == 'live_pulse':
-            self.state = self.load_state()
-            self.send(self.build_status_report(), chat_id=chat_id, reply_markup=self.main_keyboard())
+        status_triggers = ['📡 نبض مباشر', '📊 تقرير الحالة',
+                           'ما الذي يحدث الآن', 'what is happening now',
+                           '/status', '/start', '/pulse']
+        video_triggers  = ['🎞️ الفيديو الافتتاحي', '/video']
+        gen_triggers    = ['🎬 توليد فوري', '/gen']
+        settings_triggers = ['⚙️ الإعدادات', '/settings']
+        help_triggers   = ['❓ مساعدة', '/help']
 
-        elif data == 'instant_gen':
+        if any(t in text for t in status_triggers):
+            self.send(self.build_status_report(), chat_id=chat_id)
+
+        elif any(t in text for t in video_triggers):
+            self.send(self.pilot_video_report(), chat_id=chat_id)
+
+        elif any(t in text for t in gen_triggers):
             self.send(
                 "🔒 *الإنتاج مجمّد*\n"
                 "لن يتم توليد أي محتوى تلقائياً.\n"
-                "أرسل أمر الإنتاج يدوياً لبدء التشغيل.",
-                chat_id=chat_id,
-                reply_markup=self.main_keyboard()
+                "أرسل *ابدأ الإنتاج* لتفعيل أول فيديو.",
+                chat_id=chat_id
             )
 
-    def handle_message(self, message):
-        text = message.get('text', '').strip().lower()
-        chat_id = message['chat']['id']
+        elif any(t in text for t in settings_triggers):
+            self.send(
+                "⚙️ *الإعدادات الحالية*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"🧠 النموذج: gemini-1.5-flash\n"
+                f"📡 التليجرام: متصل\n"
+                f"💾 حفظ الحالة: تلقائي كل ساعة\n"
+                f"🎬 الإنتاج: مجمّد ⏸️",
+                chat_id=chat_id
+            )
 
-        status_triggers = [
-            'ما الذي يحدث الآن', 'what is happening now',
-            'ما يحدث', 'الحالة', 'status', '/status', '/start', '/pulse'
-        ]
+        elif any(t in text for t in help_triggers):
+            self.send(
+                "❓ *الأوامر المتاحة*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "📡 *نبض مباشر* — تقرير الحالة الفوري\n"
+                "📊 *تقرير الحالة* — نفس السابق\n"
+                "🎞️ *الفيديو الافتتاحي* — مراجعة الفيديو الجاهز\n"
+                "🎬 *توليد فوري* — (مجمّد الآن)\n"
+                "⚙️ *الإعدادات* — عرض الإعدادات الحالية\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "لبدء الإنتاج أرسل: *ابدأ الإنتاج*",
+                chat_id=chat_id
+            )
 
-        if any(t in text for t in status_triggers):
-            self.state = self.load_state()
-            self.send(self.build_status_report(), chat_id=chat_id, reply_markup=self.main_keyboard())
+        elif 'ابدأ الإنتاج' in text:
+            self.send(
+                "⚠️ *تأكيد مطلوب*\n"
+                "هل أنت متأكد من بدء إنتاج الفيديو الافتتاحي؟\n"
+                "أرسل: *تأكيد الإنتاج* للمتابعة.",
+                chat_id=chat_id
+            )
+
         else:
             self.send(
-                "👋 مرحباً! اختر من الأزرار أو اسأل: *ما الذي يحدث الآن؟*",
-                chat_id=chat_id,
-                reply_markup=self.main_keyboard()
+                "👋 اختر من الأزرار أدناه أو اكتب أمرك.",
+                chat_id=chat_id
             )
 
     def polling_loop(self):
@@ -129,13 +186,10 @@ class VultixSovereign:
                     params={'offset': self.last_update_id + 1, 'timeout': 30},
                     timeout=35
                 ).json()
-
                 if res.get('ok'):
                     for update in res.get('result', []):
                         self.last_update_id = update['update_id']
-                        if 'callback_query' in update:
-                            self.handle_callback(update['callback_query'])
-                        elif 'message' in update:
+                        if 'message' in update:
                             self.handle_message(update['message'])
             except Exception as e:
                 print(f"[Polling Error] {e}")
@@ -144,17 +198,15 @@ class VultixSovereign:
     def heartbeat_loop(self):
         self.send(
             "🚀 *VULTIX — تم التفعيل*\n"
-            "النظام يعمل في وضع المراقبة.\n"
-            "الإنتاج مجمّد حتى أمرك الشخصي.\n\n"
-            "اضغط على الأزرار للتفاعل 👇",
-            reply_markup=self.main_keyboard()
+            "النظام في وضع المراقبة.\n"
+            "الإنتاج مجمّد حتى أمرك.\n\n"
+            "اختر من الأزرار 👇"
         )
         while True:
             try:
                 self.state['cycle'] = self.state.get('cycle', 0) + 1
                 self.state['status'] = 'SOVEREIGN_ACTIVE'
                 self.sync_state()
-                print(f"[{datetime.datetime.now().isoformat()}] Heartbeat #{self.state['cycle']} saved.")
                 time.sleep(HEARTBEAT_INTERVAL)
             except Exception as e:
                 print(f"[Heartbeat Error] {e}")
@@ -162,8 +214,7 @@ class VultixSovereign:
                 time.sleep(60)
 
     def run(self):
-        t_poll = threading.Thread(target=self.polling_loop, daemon=True)
-        t_poll.start()
+        threading.Thread(target=self.polling_loop, daemon=True).start()
         self.heartbeat_loop()
 
 if __name__ == '__main__':
