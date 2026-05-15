@@ -94,11 +94,38 @@ class VultixSovereign:
             f"- خاتمة Call-to-Action قوية (20 ثانية)\n"
             f"أضف عنواناً جذاباً باللغتين العربية والإنجليزية."
         )
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt
-        )
-        return {'topic': chosen, 'script': response.text, 'generated_at': datetime.datetime.now().isoformat()}
+        attempts = 0
+        max_attempts = len(self.api_keys)
+        while attempts < max_attempts:
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt
+                )
+                return {
+                    'topic': chosen,
+                    'script': response.text,
+                    'generated_at': datetime.datetime.now().isoformat(),
+                    'key_used': self.key_index + 1
+                }
+            except Exception as e:
+                err = str(e)
+                if 'RESOURCE_EXHAUSTED' in err or '429' in err or 'quota' in err.lower():
+                    print(f"[Key #{self.key_index+1}] Quota exhausted — rotating...")
+                    if not self.rotate_key():
+                        self.send(
+                            "🚨 *تحذير: انتهاء الحصة*\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n"
+                            "انتهت حصة جميع مفاتيح API.\n"
+                            "⏳ سيتم التوقف المؤقت لمدة ساعة.\n"
+                            "📌 يُنصح بإضافة مفتاح ثالث:\n"
+                            "`GEMINI_API_KEY_3` في Replit Secrets"
+                        )
+                        raise
+                    attempts += 1
+                else:
+                    raise
+        raise Exception("All API keys exhausted")
 
     # ─── Telegram ─────────────────────────────────────────────────────────────
 
