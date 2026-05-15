@@ -54,7 +54,7 @@ class VultixSovereign:
     def init_brain(self):
         if self.gemini_key:
             self.client = genai.Client(api_key=self.gemini_key)
-            self.model  = 'gemini-1.5-flash'
+            self.model  = 'gemini-2.0-flash'
             print(f"[VULTIX] Brain ready: {self.model}")
         else:
             self.client = None
