@@ -52,13 +52,27 @@ class VultixSovereign:
     # ─── Brain ────────────────────────────────────────────────────────────────
 
     def init_brain(self):
-        if self.gemini_key:
-            self.client = genai.Client(api_key=self.gemini_key)
-            self.model  = 'gemini-2.0-flash'
-            print(f"[VULTIX] Brain ready: {self.model}")
+        key1 = os.environ.get('GEMINI_API_KEY',   '').strip()
+        key2 = os.environ.get('GEMINI_API_KEY_2', '').strip()
+        self.api_keys = [k for k in [key1, key2] if k]
+        self.key_index = 0
+        self.model = 'gemini-2.0-flash'
+        if self.api_keys:
+            self.client = genai.Client(api_key=self.api_keys[0])
+            print(f"[VULTIX] Brain ready: {self.model} — {len(self.api_keys)} key(s) loaded")
         else:
             self.client = None
-            print("[WARNING] GEMINI_API_KEY missing.")
+            print("[WARNING] No GEMINI API keys found.")
+
+    def rotate_key(self):
+        if len(self.api_keys) < 2:
+            return False
+        self.key_index = (self.key_index + 1) % len(self.api_keys)
+        self.client = genai.Client(api_key=self.api_keys[self.key_index])
+        msg = f"🔄 *تبديل مفتاح API*\nتم التبديل إلى المفتاح #{self.key_index + 1} بسبب انتهاء الحصة."
+        print(f"[Key Rotation] Switched to key #{self.key_index + 1}")
+        self.send(msg)
+        return True
 
     def generate_script(self, topic=None):
         if not self.client:
