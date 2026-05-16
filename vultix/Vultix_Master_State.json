@@ -28,12 +28,12 @@
             "text": "SUBSCRIBE FOR THE UNKNOWN"
         }
     ],
-    "last_sync": "2026-05-16T00:08:37.030718",
+    "last_sync": "2026-05-16T01:37:42.465299",
     "growth_plan": "Targeting Mystery/AI/Tech in US Market",
     "protocol": "AUTO_EVOLUTION",
     "last_evolved": "2026-05-15T22:06:33.936534",
     "status": "SOVEREIGN_ACTIVE",
-    "cycle": 14,
+    "cycle": 15,
     "errors": [
         {
             "time": "2026-05-15T23:38:22.908014",
@@ -67,6 +67,11 @@
         },
         {
             "time": "2026-05-16T00:08:37.030699",
+            "source": "openrouter_fallback",
+            "error": "فشلت جميع نماذج OpenRouter المجانية. آخر خطأ: HTTP 404 على microsoft/phi-4-reasoning:free"
+        },
+        {
+            "time": "2026-05-16T01:37:42.465281",
             "source": "openrouter_fallback",
             "error": "فشلت جميع نماذج OpenRouter المجانية. آخر خطأ: HTTP 404 على microsoft/phi-4-reasoning:free"
         }
