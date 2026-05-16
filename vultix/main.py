@@ -2,21 +2,22 @@ import os, json, time, datetime, requests, threading, random
 
 from google import genai
 
-STATE_PATH = 'Vultix_Master_State.json'
-SCRIPTS_DIR = 'video_queue/scripts'
+STATE_PATH          = 'Vultix_Master_State.json'
+SCRIPTS_DIR         = 'video_queue/scripts'
 PRODUCTION_INTERVAL = 7200
 HEARTBEAT_INTERVAL  = 3600
-MONITOR_INTERVAL    = 300
+OPENROUTER_MODEL    = 'deepseek/deepseek-chat'
+OPENROUTER_URL      = 'https://openrouter.ai/api/v1/chat/completions'
 
 os.makedirs(SCRIPTS_DIR, exist_ok=True)
 
 class VultixSovereign:
     def __init__(self):
-        self.token      = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
-        self.chat_id    = os.environ.get('OMAR_CHAT_ID', '').strip()
-        self.gemini_key = os.environ.get('GEMINI_API_KEY', '').strip()
-        self.state      = self.load_state()
-        self.last_update_id = 0
+        self.token           = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
+        self.chat_id         = os.environ.get('OMAR_CHAT_ID', '').strip()
+        self.openrouter_key  = os.environ.get('OPENROUTER_API_KEY', '').strip()
+        self.state           = self.load_state()
+        self.last_update_id  = 0
         self.production_active = True
         self.init_brain()
 
@@ -45,44 +46,89 @@ class VultixSovereign:
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📍 المصدر: `{source}`\n"
             f"❌ الخطأ: `{str(error)[:200]}`\n"
-            f"🕐 الوقت: {entry['time']}\n"
             f"🔄 يتم إعادة المحاولة تلقائياً..."
         )
 
-    # ─── Brain ────────────────────────────────────────────────────────────────
+    # ─── Brain — Multi-Provider ───────────────────────────────────────────────
 
     def init_brain(self):
-        key1 = os.environ.get('GEMINI_API_KEY',   '').strip()
-        key2 = os.environ.get('GEMINI_API_KEY_2', '').strip()
-        self.api_keys = [k for k in [key1, key2] if k]
-        self.key_index = 0
-        self.model = 'gemini-2.0-flash'
-        if self.api_keys:
-            self.client = genai.Client(api_key=self.api_keys[0])
-            print(f"[VULTIX] Brain ready: {self.model} — {len(self.api_keys)} key(s) loaded")
-        else:
-            self.client = None
-            print("[WARNING] No GEMINI API keys found.")
+        raw_keys = [
+            os.environ.get('GEMINI_API_KEY',   '').strip(),
+            os.environ.get('GEMINI_API_KEY_2', '').strip(),
+            os.environ.get('GEMINI_API_KEY_3', '').strip(),
+        ]
+        self.gemini_keys = [k for k in raw_keys if k]
+        self.key_index   = 0
+        self.model       = 'gemini-2.0-flash'
 
-    def rotate_key(self):
-        if len(self.api_keys) < 2:
+        if self.gemini_keys:
+            self.gemini_client = genai.Client(api_key=self.gemini_keys[0])
+            print(f"[Brain] Gemini ready — {len(self.gemini_keys)} key(s) | model: {self.model}")
+        else:
+            self.gemini_client = None
+            print("[Brain] No Gemini keys found.")
+
+        if self.openrouter_key:
+            print(f"[Brain] OpenRouter Fallback ready — model: {OPENROUTER_MODEL}")
+        else:
+            print("[Brain] No OpenRouter key — fallback unavailable.")
+
+    def _rotate_gemini_key(self):
+        next_index = (self.key_index + 1) % len(self.gemini_keys)
+        if next_index == self.key_index:
             return False
-        self.key_index = (self.key_index + 1) % len(self.api_keys)
-        self.client = genai.Client(api_key=self.api_keys[self.key_index])
-        msg = f"🔄 *تبديل مفتاح API*\nتم التبديل إلى المفتاح #{self.key_index + 1} بسبب انتهاء الحصة."
-        print(f"[Key Rotation] Switched to key #{self.key_index + 1}")
-        self.send(msg)
+        self.key_index     = next_index
+        self.gemini_client = genai.Client(api_key=self.gemini_keys[self.key_index])
+        print(f"[Key Rotation] Switched to Gemini key #{self.key_index + 1}")
+        self.send(f"🔄 *تبديل مفتاح Gemini*\nتم التبديل إلى المفتاح #{self.key_index + 1} بسبب انتهاء الحصة.")
         return True
 
+    def _generate_via_gemini(self, prompt):
+        tried = set()
+        while len(tried) < len(self.gemini_keys):
+            tried.add(self.key_index)
+            try:
+                response = self.gemini_client.models.generate_content(
+                    model=self.model, contents=prompt
+                )
+                return response.text, f"gemini-key-{self.key_index + 1}"
+            except Exception as e:
+                err = str(e)
+                is_quota = any(x in err for x in ['RESOURCE_EXHAUSTED', '429', 'quota'])
+                if is_quota and self._rotate_gemini_key():
+                    continue
+                raise
+        raise Exception("All Gemini keys exhausted")
+
+    def _generate_via_openrouter(self, prompt):
+        if not self.openrouter_key:
+            raise Exception("OpenRouter key not configured")
+        res = requests.post(
+            OPENROUTER_URL,
+            headers={
+                'Authorization': f'Bearer {self.openrouter_key}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': OPENROUTER_MODEL,
+                'messages': [{'role': 'user', 'content': prompt}]
+            },
+            timeout=30
+        )
+        data = res.json()
+        if res.status_code != 200:
+            raise Exception(f"OpenRouter error {res.status_code}: {data}")
+        return data['choices'][0]['message']['content'], OPENROUTER_MODEL
+
     def generate_script(self, topic=None):
-        if not self.client:
-            return None
         topics = [
             "أسرار الذكاء الاصطناعي التي تُخفيها الشركات الكبرى",
             "تقنية المستقبل التي ستغيّر العالم خلال 10 سنوات",
             "حقائق صادمة عن كيف تراقبك التكنولوجيا",
             "الخوارزميات الخفية التي تتحكم في حياتك اليومية",
-            "ما لا تعرفه عن ChatGPT وما وراءه"
+            "ما لا تعرفه عن ChatGPT وما وراءه",
+            "الروبوتات والذكاء الاصطناعي — هل ستسرق وظيفتك؟",
+            "أسرار الإنترنت المظلم التي لا يريدونك أن تعرفها",
         ]
         chosen = topic or random.choice(topics)
         prompt = (
@@ -94,38 +140,45 @@ class VultixSovereign:
             f"- خاتمة Call-to-Action قوية (20 ثانية)\n"
             f"أضف عنواناً جذاباً باللغتين العربية والإنجليزية."
         )
-        attempts = 0
-        max_attempts = len(self.api_keys)
-        while attempts < max_attempts:
+
+        provider = None
+        text     = None
+
+        # 1) حاول عبر Gemini
+        if self.gemini_client:
             try:
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt
-                )
-                return {
-                    'topic': chosen,
-                    'script': response.text,
-                    'generated_at': datetime.datetime.now().isoformat(),
-                    'key_used': self.key_index + 1
-                }
+                text, provider = self._generate_via_gemini(prompt)
             except Exception as e:
-                err = str(e)
-                if 'RESOURCE_EXHAUSTED' in err or '429' in err or 'quota' in err.lower():
-                    print(f"[Key #{self.key_index+1}] Quota exhausted — rotating...")
-                    if not self.rotate_key():
-                        self.send(
-                            "🚨 *تحذير: انتهاء الحصة*\n"
-                            "━━━━━━━━━━━━━━━━━━━━\n"
-                            "انتهت حصة جميع مفاتيح API.\n"
-                            "⏳ سيتم التوقف المؤقت لمدة ساعة.\n"
-                            "📌 يُنصح بإضافة مفتاح ثالث:\n"
-                            "`GEMINI_API_KEY_3` في Replit Secrets"
-                        )
-                        raise
-                    attempts += 1
-                else:
-                    raise
-        raise Exception("All API keys exhausted")
+                print(f"[Gemini] All keys failed: {e}")
+                self.send(
+                    "🚨 *انتهاء حصة Gemini*\n"
+                    "جميع مفاتيح Gemini استُنفدت.\n"
+                    "⚡ التبديل التلقائي إلى OpenRouter/DeepSeek..."
+                )
+
+        # 2) Fallback → OpenRouter
+        if text is None:
+            try:
+                text, provider = self._generate_via_openrouter(prompt)
+                self.send(f"✅ *Fallback نجح*\nتم التوليد عبر OpenRouter ({OPENROUTER_MODEL})")
+            except Exception as e:
+                self.log_error('openrouter_fallback', e)
+                self.send(
+                    "🚨 *فشل جميع المزودين*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "❌ Gemini: حصة منتهية\n"
+                    "❌ OpenRouter: خطأ\n"
+                    "⏳ سيُعاد المحاولة في الدورة القادمة.\n"
+                    "📌 أضف مفتاحاً جديداً: `GEMINI_API_KEY_3`"
+                )
+                return None
+
+        return {
+            'topic':        chosen,
+            'script':       text,
+            'provider':     provider,
+            'generated_at': datetime.datetime.now().isoformat(),
+        }
 
     # ─── Telegram ─────────────────────────────────────────────────────────────
 
@@ -143,79 +196,79 @@ class VultixSovereign:
     def reply_keyboard(self):
         return {
             'keyboard': [
-                [{'text': '📡 نبض مباشر'}, {'text': '📊 تقرير الحالة'}],
-                [{'text': '🎬 آخر سيناريو'}, {'text': '📋 قائمة السيناريوهات'}],
-                [{'text': '⚙️ الإعدادات'}, {'text': '❓ مساعدة'}]
+                [{'text': '📡 نبض مباشر'},       {'text': '📊 تقرير الحالة'}],
+                [{'text': '🎬 آخر سيناريو'},     {'text': '📋 قائمة السيناريوهات'}],
+                [{'text': '⚙️ الإعدادات'},        {'text': '❓ مساعدة'}],
             ],
             'resize_keyboard': True,
-            'persistent': True
+            'persistent':      True,
         }
 
     def send(self, text, chat_id=None, with_keyboard=True):
         payload = {
-            'chat_id': chat_id or self.chat_id,
-            'text': text,
-            'parse_mode': 'Markdown'
+            'chat_id':    chat_id or self.chat_id,
+            'text':       text,
+            'parse_mode': 'Markdown',
         }
         if with_keyboard:
             payload['reply_markup'] = self.reply_keyboard()
         return self.api('sendMessage', **payload)
 
-    # ─── Status & Reports ─────────────────────────────────────────────────────
+    # ─── Reports ──────────────────────────────────────────────────────────────
 
     def build_status_report(self):
-        s = self.load_state()
+        s   = self.load_state()
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        prod_status = "🟢 نشط — يعمل تلقائياً" if self.production_active else "⏸️ موقوف"
+        prod = "🟢 نشط" if self.production_active else "⏸️ موقوف"
+        gemini_status = f"{len(self.gemini_keys)} مفتاح (نشط: #{self.key_index+1})" if self.gemini_keys else "غير متاح"
+        or_status     = "✅ جاهز" if self.openrouter_key else "❌ غير مُعدّ"
         return (
             f"📊 *VULTIX — تقرير الحالة*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🔄 الدورة: #{s.get('cycle', 0)}\n"
-            f"📝 السيناريوهات المولّدة: {s.get('scripts_generated', 0)}\n"
+            f"📝 السيناريوهات: {s.get('scripts_generated', 0)}\n"
             f"⏱ آخر مزامنة: {s.get('last_sync', 'N/A')}\n"
             f"🔐 الحالة: {s.get('status', 'N/A')}\n"
-            f"🎬 الإنتاج: {prod_status}\n"
-            f"⚠️ الأخطاء المسجّلة: {len(s.get('errors', []))}\n"
-            f"🕐 وقت الاستعلام: {now}"
+            f"🎬 الإنتاج: {prod}\n"
+            f"🧠 Gemini: {gemini_status}\n"
+            f"⚡ OpenRouter Fallback: {or_status}\n"
+            f"⚠️ الأخطاء: {len(s.get('errors', []))}\n"
+            f"🕐 الوقت: {now}"
         )
 
     def latest_script_report(self):
-        scripts = sorted([
-            f for f in os.listdir(SCRIPTS_DIR) if f.endswith('.json')
-        ]) if os.path.exists(SCRIPTS_DIR) else []
-        if not scripts:
-            return "📭 لا توجد سيناريوهات مولّدة حتى الآن."
-        with open(os.path.join(SCRIPTS_DIR, scripts[-1]), 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        script_preview = data.get('script', '')[:600]
+        files = sorted([f for f in os.listdir(SCRIPTS_DIR) if f.endswith('.json')]) if os.path.exists(SCRIPTS_DIR) else []
+        if not files:
+            return "📭 لا توجد سيناريوهات مولّدة بعد."
+        with open(os.path.join(SCRIPTS_DIR, files[-1]), 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        preview = d.get('script', '')[:700]
         return (
-            f"🎬 *آخر سيناريو مولّد*\n"
+            f"🎬 *آخر سيناريو*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 الموضوع: {data.get('topic', 'N/A')}\n"
-            f"🕐 وقت التوليد: {data.get('generated_at', 'N/A')}\n"
+            f"📌 الموضوع: {d.get('topic','N/A')}\n"
+            f"⚡ المزود: `{d.get('provider','N/A')}`\n"
+            f"🕐 التوليد: {d.get('generated_at','N/A')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{script_preview}..."
+            f"{preview}..."
         )
 
     def scripts_list_report(self):
-        scripts = sorted([
-            f for f in os.listdir(SCRIPTS_DIR) if f.endswith('.json')
-        ]) if os.path.exists(SCRIPTS_DIR) else []
-        if not scripts:
+        files = sorted([f for f in os.listdir(SCRIPTS_DIR) if f.endswith('.json')]) if os.path.exists(SCRIPTS_DIR) else []
+        if not files:
             return "📭 لا توجد سيناريوهات بعد."
-        lines = [f"📋 *السيناريوهات المولّدة ({len(scripts)})*\n━━━━━━━━━━━━━━━━━━━━"]
-        for i, s in enumerate(scripts[-10:], 1):
-            lines.append(f"{i}. `{s}`")
+        lines = [f"📋 *السيناريوهات ({len(files)})*\n━━━━━━━━━━━━━━━━━━━━"]
+        for i, name in enumerate(files[-10:], 1):
+            lines.append(f"{i}. `{name}`")
         return "\n".join(lines)
 
     # ─── Message Handler ──────────────────────────────────────────────────────
 
     def handle_message(self, message):
-        text     = message.get('text', '').strip()
-        chat_id  = message['chat']['id']
-        text_low = text.lower()
+        text    = message.get('text', '').strip()
+        chat_id = message['chat']['id']
 
-        if any(t in text for t in ['📡 نبض مباشر', '📊 تقرير الحالة', 'ما الذي يحدث', '/status', '/start', '/pulse']):
+        if any(t in text for t in ['📡 نبض مباشر', '📊 تقرير الحالة', '/status', '/start', '/pulse']):
             self.send(self.build_status_report(), chat_id=chat_id)
 
         elif any(t in text for t in ['🎬 آخر سيناريو', '/latest']):
@@ -225,13 +278,16 @@ class VultixSovereign:
             self.send(self.scripts_list_report(), chat_id=chat_id)
 
         elif any(t in text for t in ['⚙️ الإعدادات', '/settings']):
+            gemini_keys = len(self.gemini_keys)
+            or_ready    = "✅" if self.openrouter_key else "❌"
             self.send(
                 f"⚙️ *الإعدادات الحالية*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"🧠 النموذج: `gemini-1.5-flash`\n"
+                f"🧠 الموديل: `{self.model}`\n"
+                f"🔑 مفاتيح Gemini: {gemini_keys}\n"
+                f"⚡ OpenRouter Fallback: {or_ready}\n"
                 f"🔄 الإنتاج كل: {PRODUCTION_INTERVAL//60} دقيقة\n"
-                f"💾 Heartbeat كل: {HEARTBEAT_INTERVAL//60} دقيقة\n"
-                f"🔍 المراقبة كل: {MONITOR_INTERVAL//60} دقيقة",
+                f"💾 Heartbeat كل: {HEARTBEAT_INTERVAL//60} دقيقة",
                 chat_id=chat_id
             )
 
@@ -239,15 +295,14 @@ class VultixSovereign:
             self.send(
                 "❓ *الأوامر المتاحة*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "📡 *نبض مباشر* — تقرير الحالة الفوري\n"
-                "🎬 *آخر سيناريو* — عرض آخر سيناريو مولّد\n"
-                "📋 *قائمة السيناريوهات* — كل السيناريوهات\n"
-                "⚙️ *الإعدادات* — إعدادات النظام\n"
+                "📡 نبض مباشر — تقرير فوري\n"
+                "🎬 آخر سيناريو — آخر سيناريو مولّد\n"
+                "📋 قائمة السيناريوهات — كل الملفات\n"
+                "⚙️ الإعدادات — حالة المزودين والمفاتيح\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "*أوامر يدوية مباشرة:*\n"
-                "🎯 `اكتب عن [موضوع]` — توليد سيناريو بموضوع محدد\n"
-                "⏸️ `أوقف الإنتاج` — إيقاف الإنتاج التلقائي\n"
-                "▶️ `ابدأ الإنتاج` — تشغيل الإنتاج التلقائي",
+                "✍️ `اكتب عن [موضوع]` — سيناريو فوري\n"
+                "⏸️ `أوقف الإنتاج` — إيقاف مؤقت\n"
+                "▶️ `ابدأ الإنتاج` — استئناف",
                 chat_id=chat_id
             )
 
@@ -260,16 +315,16 @@ class VultixSovereign:
             self.production_active = False
             self.state['production_status'] = 'PAUSED'
             self.sync_state()
-            self.send("⏸️ تم إيقاف الإنتاج التلقائي.\nأرسل *ابدأ الإنتاج* للاستئناف.", chat_id=chat_id)
+            self.send("⏸️ تم إيقاف الإنتاج التلقائي.", chat_id=chat_id)
 
         elif 'ابدأ الإنتاج' in text:
             self.production_active = True
             self.state['production_status'] = 'ACTIVE'
             self.sync_state()
-            self.send("▶️ تم تفعيل الإنتاج التلقائي!\nسيبدأ توليد السيناريوهات الآن.", chat_id=chat_id)
+            self.send("▶️ تم تفعيل الإنتاج التلقائي!", chat_id=chat_id)
 
         else:
-            self.send("👋 اختر من الأزرار أدناه أو أرسل:\n`اكتب عن [موضوع]` لسيناريو مخصص.", chat_id=chat_id)
+            self.send("👋 اختر من الأزرار أو أرسل:\n`اكتب عن [موضوع]`", chat_id=chat_id)
 
     def _manual_generate(self, topic, chat_id):
         try:
@@ -285,6 +340,7 @@ class VultixSovereign:
                     f"✅ *تم توليد السيناريو*\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"📌 الموضوع: {topic}\n"
+                    f"⚡ المزود: `{data.get('provider','N/A')}`\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"{preview}...",
                     chat_id=chat_id
@@ -295,7 +351,7 @@ class VultixSovereign:
     # ─── Loops ────────────────────────────────────────────────────────────────
 
     def polling_loop(self):
-        print("[Bot] Telegram polling started — monitor mode active.")
+        print("[Bot] Telegram polling — 24/7 monitor active.")
         while True:
             try:
                 res = requests.get(
@@ -313,12 +369,12 @@ class VultixSovereign:
                 time.sleep(5)
 
     def production_loop(self):
-        print("[Production] Autonomous script generation started.")
+        print("[Production] Autonomous loop started.")
         time.sleep(30)
         while True:
             if self.production_active:
                 try:
-                    print("[Production] Generating new script...")
+                    print("[Production] Generating script...")
                     data = self.generate_script()
                     if data:
                         fname = f"auto_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -326,29 +382,30 @@ class VultixSovereign:
                             json.dump(data, f, indent=4, ensure_ascii=False)
                         self.state['scripts_generated'] = self.state.get('scripts_generated', 0) + 1
                         self.state['last_script'] = data['topic']
+                        self.state['last_provider'] = data.get('provider', 'N/A')
                         self.sync_state()
                         self.send(
-                            f"🎬 *سيناريو جديد تم توليده تلقائياً*\n"
+                            f"🎬 *سيناريو جديد تلقائياً*\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📌 الموضوع: {data['topic']}\n"
-                            f"🕐 الوقت: {data['generated_at']}\n"
-                            f"📁 محفوظ في: `{SCRIPTS_DIR}/{fname}`\n"
+                            f"📌 {data['topic']}\n"
+                            f"⚡ المزود: `{data.get('provider','N/A')}`\n"
+                            f"🕐 {data['generated_at']}\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"اضغط *🎬 آخر سيناريو* لعرضه كاملاً"
+                            f"اضغط *🎬 آخر سيناريو* لعرضه"
                         )
                 except Exception as e:
                     self.log_error('production_loop', e)
             else:
-                print("[Production] Paused — waiting for activation.")
+                print("[Production] Paused.")
             time.sleep(PRODUCTION_INTERVAL)
 
     def monitor_loop(self):
-        print("[Monitor] State monitor started.")
+        print("[Monitor] Heartbeat loop started.")
         while True:
             try:
                 self.state = self.load_state()
                 self.state['status'] = 'SOVEREIGN_ACTIVE'
-                self.state['cycle'] = self.state.get('cycle', 0) + 1
+                self.state['cycle']  = self.state.get('cycle', 0) + 1
                 self.sync_state()
             except Exception as e:
                 print(f"[Monitor Error] {e}")
@@ -356,14 +413,17 @@ class VultixSovereign:
             time.sleep(HEARTBEAT_INTERVAL)
 
     def run(self):
+        gemini_count = len(self.gemini_keys)
+        or_status    = "✅ جاهز" if self.openrouter_key else "❌ غير مُعدّ"
         self.send(
-            "🚀 *VULTIX — تم الإقلاع*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🤖 السيستم: يعمل تلقائياً بحرية كاملة\n"
-            "🎬 الإنتاج: نشط — يولّد سيناريوهات\n"
-            "🔍 البوت: مراقبة مستمرة 24/7\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "اختر من الأزرار أو أرسل: `اكتب عن [موضوع]`"
+            f"🚀 *VULTIX — تم الإقلاع*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🧠 Gemini: {gemini_count} مفتاح نشط\n"
+            f"⚡ OpenRouter Fallback: {or_status}\n"
+            f"🎬 الإنتاج: تلقائي كل {PRODUCTION_INTERVAL//60} دقيقة\n"
+            f"🔍 المراقبة: مستمرة 24/7\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"اختر من الأزرار أو أرسل: `اكتب عن [موضوع]`"
         )
         threading.Thread(target=self.polling_loop,    daemon=True).start()
         threading.Thread(target=self.production_loop, daemon=True).start()
