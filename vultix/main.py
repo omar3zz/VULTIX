@@ -6,7 +6,12 @@ STATE_PATH          = 'Vultix_Master_State.json'
 SCRIPTS_DIR         = 'video_queue/scripts'
 PRODUCTION_INTERVAL = 7200
 HEARTBEAT_INTERVAL  = 3600
-OPENROUTER_MODEL    = 'deepseek/deepseek-chat'
+OPENROUTER_FREE_MODELS = [
+    'google/gemini-2.5-flash:free',
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'deepseek/deepseek-r1:free',
+    'microsoft/phi-4-reasoning:free',
+]
 OPENROUTER_URL      = 'https://openrouter.ai/api/v1/chat/completions'
 
 os.makedirs(SCRIPTS_DIR, exist_ok=True)
@@ -69,7 +74,7 @@ class VultixSovereign:
             print("[Brain] No Gemini keys found.")
 
         if self.openrouter_key:
-            print(f"[Brain] OpenRouter Fallback ready — model: {OPENROUTER_MODEL}")
+            print(f"[Brain] OpenRouter Fallback ready — {len(OPENROUTER_FREE_MODELS)} free model(s)")
         else:
             print("[Brain] No OpenRouter key — fallback unavailable.")
 
@@ -103,22 +108,38 @@ class VultixSovereign:
     def _generate_via_openrouter(self, prompt):
         if not self.openrouter_key:
             raise Exception("OpenRouter key not configured")
-        res = requests.post(
-            OPENROUTER_URL,
-            headers={
-                'Authorization': f'Bearer {self.openrouter_key}',
-                'Content-Type': 'application/json'
-            },
-            json={
-                'model': OPENROUTER_MODEL,
-                'messages': [{'role': 'user', 'content': prompt}]
-            },
-            timeout=30
-        )
-        data = res.json()
-        if res.status_code != 200:
-            raise Exception(f"OpenRouter error {res.status_code}: {data}")
-        return data['choices'][0]['message']['content'], OPENROUTER_MODEL
+        last_error = None
+        for model in OPENROUTER_FREE_MODELS:
+            try:
+                res = requests.post(
+                    OPENROUTER_URL,
+                    headers={
+                        'Authorization': f'Bearer {self.openrouter_key}',
+                        'Content-Type': 'application/json'
+                    },
+                    json={
+                        'model': model,
+                        'messages': [{'role': 'user', 'content': prompt}]
+                    },
+                    timeout=30
+                )
+                data = res.json()
+                if res.status_code == 402 or 'credits' in str(data).lower():
+                    print(f"[OpenRouter] {model} — رصيد غير كافٍ، جاري التبديل...")
+                    last_error = f"402 على {model}"
+                    continue
+                if res.status_code != 200:
+                    print(f"[OpenRouter] {model} — خطأ {res.status_code}، جاري التبديل...")
+                    last_error = f"HTTP {res.status_code} على {model}"
+                    continue
+                text = data['choices'][0]['message']['content']
+                print(f"[OpenRouter] نجح: {model}")
+                return text, f"openrouter/{model}"
+            except Exception as e:
+                print(f"[OpenRouter] {model} — {e}")
+                last_error = str(e)
+                continue
+        raise Exception(f"فشلت جميع نماذج OpenRouter المجانية. آخر خطأ: {last_error}")
 
     def generate_script(self, topic=None):
         topics = [
