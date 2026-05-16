@@ -1,0 +1,8 @@
+
+=== بدء تشغيل دورة الماكينة الجديدة ===
+
+Hello from repl-nix-workspace!
+
+=== بدء تشغيل دورة الماكينة الجديدة ===
+
+Hello from repl-nix-workspace!
