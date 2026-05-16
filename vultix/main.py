@@ -26,7 +26,7 @@ class VultixSovereign:
         self.production_active = True
         self.init_brain()
 
-    # ─── State ────────────────────────────────────────────────────────────────
+    # ─── State ──────────────────────────────────────────────────────────[...]
 
     def load_state(self):
         if os.path.exists(STATE_PATH):
@@ -201,7 +201,7 @@ class VultixSovereign:
             'generated_at': datetime.datetime.now().isoformat(),
         }
 
-    # ─── Telegram ─────────────────────────────────────────────────────────────
+    # ─── Telegram ──────────────────────────────────────────────────────────[...]
 
     def api(self, method, **kwargs):
         try:
@@ -235,7 +235,7 @@ class VultixSovereign:
             payload['reply_markup'] = self.reply_keyboard()
         return self.api('sendMessage', **payload)
 
-    # ─── Reports ──────────────────────────────────────────────────────────────
+    # ─── Reports ─────────────────────────────────────────────────────────[...]
 
     def build_status_report(self):
         s   = self.load_state()
@@ -347,6 +347,47 @@ class VultixSovereign:
         else:
             self.send("👋 اختر من الأزرار أو أرسل:\n`اكتب عن [موضوع]`", chat_id=chat_id)
 
+    def handle_callback_query(self, callback_query):
+        """
+        ✅ SAFE CALLBACK QUERY HANDLER with null checks
+        Prevents crash from .split() on undefined data
+        """
+        query_id = callback_query.get('id')
+        
+        # ✅ CRITICAL FIX: Check if data exists before calling .split()
+        data = callback_query.get('data')
+        
+        if not data or not isinstance(data, str):
+            print(f"[Callback] Invalid or missing data: {data}")
+            # Send error notification to user
+            self.api('answerCallbackQuery', {
+                'callback_query_id': query_id,
+                'text': '❌ بيانات الزر غير صحيحة',
+                'show_alert': True
+            })
+            return
+        
+        # ✅ Now it's safe to use .split()
+        parts = data.split('_')
+        print(f"[Callback] Received: {data} → Parts: {parts}")
+        
+        # Handle specific callback actions
+        if parts[0] == 'action':
+            if len(parts) > 1:
+                action_type = parts[1]
+                print(f"[Callback] Action type: {action_type}")
+                self.api('answerCallbackQuery', {
+                    'callback_query_id': query_id,
+                    'text': f'✅ تم تنفيذ: {action_type}',
+                })
+        else:
+            # Unknown action
+            self.api('answerCallbackQuery', {
+                'callback_query_id': query_id,
+                'text': '❌ إجراء غير معروف',
+                'show_alert': False
+            })
+
     def _manual_generate(self, topic, chat_id):
         try:
             data = self.generate_script(topic=topic)
@@ -369,7 +410,7 @@ class VultixSovereign:
         except Exception as e:
             self.log_error('manual_generate', e)
 
-    # ─── Loops ────────────────────────────────────────────────────────────────
+    # ─── Loops ───────────────────────────────────────────────────────────[...]
 
     def polling_loop(self):
         print("[Bot] Telegram polling — 24/7 monitor active.")
@@ -385,6 +426,9 @@ class VultixSovereign:
                         self.last_update_id = update['update_id']
                         if 'message' in update:
                             self.handle_message(update['message'])
+                        # ✅ NEW: Handle callback queries from inline buttons
+                        elif 'callback_query' in update:
+                            self.handle_callback_query(update['callback_query'])
             except Exception as e:
                 print(f"[Polling Error] {e}")
                 time.sleep(5)
