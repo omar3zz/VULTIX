@@ -28,7 +28,7 @@
             "text": "SUBSCRIBE FOR THE UNKNOWN"
         }
     ],
-    "last_sync": "2026-05-16T00:08:05.023621",
+    "last_sync": "2026-05-16T00:08:37.030718",
     "growth_plan": "Targeting Mystery/AI/Tech in US Market",
     "protocol": "AUTO_EVOLUTION",
     "last_evolved": "2026-05-15T22:06:33.936534",
@@ -64,6 +64,11 @@
             "time": "2026-05-16T00:04:46.308842",
             "source": "openrouter_fallback",
             "error": "OpenRouter error 402: {'error': {'message': 'Insufficient credits. This account never purchased credits. Make sure your key is on the correct account or org, and if so, purchase more at https://openrouter.ai/settings/credits', 'code': 402}}"
+        },
+        {
+            "time": "2026-05-16T00:08:37.030699",
+            "source": "openrouter_fallback",
+            "error": "فشلت جميع نماذج OpenRouter المجانية. آخر خطأ: HTTP 404 على microsoft/phi-4-reasoning:free"
         }
     ]
 }
